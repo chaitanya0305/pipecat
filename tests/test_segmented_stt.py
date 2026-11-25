@@ -15,6 +15,7 @@ from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
     MetricsFrame,
+    STTMuteFrame,
     TranscriptionFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -331,3 +332,33 @@ async def test_usage_includes_trailing_silence():
     audio_seconds = await _drive_one_segment_with_usage(service)
 
     assert audio_seconds == pytest.approx((len(PCM) + len(DEFAULT_SILENCE)) / (SAMPLE_RATE * 2))
+
+
+@pytest.mark.asyncio
+async def test_speech_while_muted_is_not_transcribed():
+    service = _make_capturing_service()
+
+    await run_test(service, frames_to_send=[STTMuteFrame(mute=True), *_segment_frames()])
+
+    assert service.captured == []
+
+
+@pytest.mark.asyncio
+async def test_a_segment_keeps_only_the_audio_heard_unmuted():
+    service = _make_capturing_service(wants_wav=False, trailing_silence_secs=0)
+    before, during, after = PCM[:320], PCM[320:640], PCM[640:]
+
+    await run_test(
+        service,
+        frames_to_send=[
+            VADUserStartedSpeakingFrame(),
+            InputAudioRawFrame(audio=before, sample_rate=SAMPLE_RATE, num_channels=1),
+            STTMuteFrame(mute=True),
+            InputAudioRawFrame(audio=during, sample_rate=SAMPLE_RATE, num_channels=1),
+            STTMuteFrame(mute=False),
+            InputAudioRawFrame(audio=after, sample_rate=SAMPLE_RATE, num_channels=1),
+            VADUserStoppedSpeakingFrame(),
+        ],
+    )
+
+    assert service.captured == [before + after]

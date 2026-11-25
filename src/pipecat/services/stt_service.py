@@ -1277,8 +1277,9 @@ class SegmentedSTTService(STTService):
     async def _handle_user_stopped_speaking(self, frame: VADUserStoppedSpeakingFrame):
         segment = self._speech_buffer.stop()
 
-        # A service that can no longer work can't transcribe this segment.
-        if not self.is_usable:
+        # A service that can no longer work can't transcribe this segment, and
+        # a segment spoken entirely while muted has no audio to transcribe.
+        if not self.is_usable or not segment:
             return
 
         pcm = segment + self._trailing_silence()
@@ -1358,6 +1359,7 @@ class SegmentedSTTService(STTService):
 
         Continuously buffers audio, growing the buffer while user is speaking and
         maintaining a small buffer when not speaking to account for VAD delay.
+        Audio that arrives while the service is muted is dropped.
 
         If the frame has a user_id, it is stored for later use in transcription.
 
@@ -1365,6 +1367,9 @@ class SegmentedSTTService(STTService):
             frame: The audio frame to process.
             direction: The direction of frame processing.
         """
+        if self._muted:
+            return
+
         # UserAudioRawFrame contains a user_id (e.g. Daily, Livekit)
         if isinstance(frame, UserAudioRawFrame):
             self._user_id = frame.user_id
