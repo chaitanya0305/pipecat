@@ -137,6 +137,7 @@ class LLMWorker(PipelineWorker):
         # A handover or ending a tool asked for, held until its call is done.
         self._pending_handover: Callable[[], Awaitable[None]] | None = None
         self._closing: bool = False
+        self._flushing: bool = False
 
         self._llm = llm
         self._register_tools(llm)
@@ -200,7 +201,11 @@ class LLMWorker(PipelineWorker):
                 ``FrameDirection.DOWNSTREAM``.
         """
         call = _IN_TOOL_CALL.get()
-        in_own_call = call is not None and call.worker is self and call.running
+        in_own_call = (
+            call is not None
+            and call.worker is self
+            and (call.running or self._tool_call_inflight > 0 or self._flushing)
+        )
         if self._defer_tool_frames and in_own_call and not self._closing:
             self._deferred_frames.append((frame, direction))
         else:
@@ -315,7 +320,8 @@ class LLMWorker(PipelineWorker):
         """Process deferred frames before they are flushed.
 
         Called after all in-flight tools complete, before the deferred
-        frames are queued into the pipeline. Override to inspect, modify,
+        frames are queued into the pipeline. Frames held while a batch is
+        being flushed come in a later call. Override to inspect, modify,
         reorder, or filter the frames.
 
         Args:
@@ -374,17 +380,16 @@ class LLMWorker(PipelineWorker):
         return wrapper
 
     async def _flush_deferred_frames(self) -> None:
-        frames = list(self._deferred_frames)
-        self._deferred_frames.clear()
-
-        # Held frames go back in behind the function call result, so wait for
-        # that to be processed first. With nothing held there is nothing to
-        # order, and the round-trip would buy nothing.
-        if frames:
-            await self.flush_pipeline()
-
-        for frame, direction in await self.process_deferred_tool_frames(frames):
-            await self.queue_frame(frame, direction)
+        self._flushing = True
+        try:
+            while self._deferred_frames:
+                frames = list(self._deferred_frames)
+                self._deferred_frames.clear()
+                await self.flush_pipeline()
+                for frame, direction in await self.process_deferred_tool_frames(frames):
+                    await self.queue_frame(frame, direction)
+        finally:
+            self._flushing = False
 
     async def _finish_function_call(
         self,

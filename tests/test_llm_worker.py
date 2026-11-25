@@ -379,6 +379,82 @@ class TestToolCallTracking(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(delivered), 1)
         self.assertIs(delivered[0][0], frame)
 
+    async def test_task_frame_during_flush_keeps_order(self):
+        """A task's frame queued while held frames are flushed goes after them."""
+        worker = self._track(_create_worker())
+        flushing = asyncio.Event()
+        release_flush = asyncio.Event()
+        first, second = _make_frame("first"), _make_frame("second")
+        background: list[asyncio.Task] = []
+
+        async def slow_flush(timeout: float | None = None) -> bool:
+            flushing.set()
+            await release_flush.wait()
+            return True
+
+        worker.flush_pipeline = slow_flush
+
+        async def report():
+            await worker.queue_frame(first)
+            await flushing.wait()
+            await worker.queue_frame(second)
+
+        @tool
+        async def starting_tool(self, params):
+            """Starts background work that reports during and after the call."""
+            background.append(asyncio.create_task(report()))
+            await asyncio.sleep(0)
+
+        wrapped = worker._track_tool_call(starting_tool.__get__(worker))
+        call = asyncio.create_task(wrapped(MagicMock()))
+        await flushing.wait()
+        await background[0]
+        release_flush.set()
+        await call
+
+        delivered = [frame for frame, _ in _get_delivered_frames(worker)]
+        self.assertEqual(delivered, [first, second])
+        self.assertEqual(len(worker._deferred_frames), 0)
+
+    async def test_task_frame_while_other_call_runs_keeps_order(self):
+        """A returned call's task stays held, in order, while another call runs."""
+        worker = self._track(_create_worker())
+        release_other = asyncio.Event()
+        report_second = asyncio.Event()
+        first, second = _make_frame("first"), _make_frame("second")
+        background: list[asyncio.Task] = []
+
+        async def report():
+            await worker.queue_frame(first)
+            await report_second.wait()
+            await worker.queue_frame(second)
+
+        @tool
+        async def starting_tool(self, params):
+            """Starts background work and returns."""
+            background.append(asyncio.create_task(report()))
+            await asyncio.sleep(0)
+
+        @tool
+        async def other_tool(self, params):
+            """Stays running until released."""
+            await release_other.wait()
+
+        other = asyncio.create_task(
+            worker._track_tool_call(other_tool.__get__(worker))(MagicMock())
+        )
+        await asyncio.sleep(0)
+        await worker._track_tool_call(starting_tool.__get__(worker))(MagicMock())
+        report_second.set()
+        await background[0]
+        self.assertEqual(_get_delivered_frames(worker), [])
+
+        release_other.set()
+        await other
+
+        delivered = [frame for frame, _ in _get_delivered_frames(worker)]
+        self.assertEqual(delivered, [first, second])
+
 
 class TestPipelineWorkerArguments(unittest.TestCase):
     def _llm(self):
