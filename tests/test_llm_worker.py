@@ -348,6 +348,37 @@ class TestToolCallTracking(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(delivered), 1)
         self.assertIs(delivered[0][0], frame)
 
+    async def test_task_started_by_tool_delivers_after_tool_returns(self):
+        """A task a tool starts queues immediately once the tool has returned.
+
+        The task copies the handler's context, but after the call is over
+        nothing would release a frame it held.
+        """
+        worker = self._track(_create_worker())
+        gate = asyncio.Event()
+        frame = _make_frame("background result")
+        background: list[asyncio.Task] = []
+
+        async def report_later():
+            await gate.wait()
+            await worker.queue_frame(frame)
+
+        @tool
+        async def starting_tool(self, params):
+            """Starts background work and returns."""
+            background.append(asyncio.create_task(report_later()))
+
+        wrapped = worker._track_tool_call(starting_tool.__get__(worker))
+        await wrapped(MagicMock())
+
+        gate.set()
+        await background[0]
+
+        self.assertEqual(len(worker._deferred_frames), 0)
+        delivered = _get_delivered_frames(worker)
+        self.assertEqual(len(delivered), 1)
+        self.assertIs(delivered[0][0], frame)
+
 
 class TestPipelineWorkerArguments(unittest.TestCase):
     def _llm(self):

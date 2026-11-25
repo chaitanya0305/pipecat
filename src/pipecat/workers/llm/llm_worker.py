@@ -51,14 +51,28 @@ class LLMWorkerActivationArgs(WorkerActivationArgs):
     run_llm: bool | None = None
 
 
-#: The worker whose ``@tool`` handler is running, for the duration of that
-#: handler. A context variable rather than a counter so it answers "did this
-#: come from a tool", not "is a tool running somewhere": the bus dispatch tasks
-#: were created before any tool and carry a context where this is unset, so
-#: their frames are never mistaken for a handler's. It holds the worker rather
-#: than a flag because a handler can reach another worker, and only the worker
-#: running the tool will release what it holds.
-_IN_TOOL_CALL: contextvars.ContextVar["LLMWorker | None"] = contextvars.ContextVar(
+class _ToolCall:
+    """One run of a ``@tool`` handler: the worker running it, and whether it still is.
+
+    A task the handler starts copies its context, and with it this call, and
+    can outlive the handler. Once the call is over, nothing would release a
+    frame such a task queues, so the frame is held only while the call runs.
+    """
+
+    __slots__ = ("worker", "running")
+
+    def __init__(self, worker: "LLMWorker"):
+        self.worker = worker
+        self.running = True
+
+
+#: The ``@tool`` call running in this context, if any. A context variable
+#: rather than a counter so it answers "did this come from a tool", not "is a
+#: tool running somewhere": the bus dispatch tasks were created before any tool
+#: and carry a context where this is unset, so their frames are never mistaken
+#: for a handler's. It names the worker because a handler can reach another
+#: worker, and only the worker running the tool will release what it holds.
+_IN_TOOL_CALL: contextvars.ContextVar[_ToolCall | None] = contextvars.ContextVar(
     "pipecat_in_tool_call", default=None
 )
 
@@ -173,18 +187,21 @@ class LLMWorker(PipelineWorker):
 
         A frame queued from inside one of this worker's ``@tool`` handlers,
         or from anything that handler awaits, is held and delivered once the
-        last tool finishes. Frames from anywhere else are queued
-        immediately: the worker's own traffic and frames arriving over the
-        bus, which run outside any handler's context, and frames a handler
-        on a different worker queues here, which this worker would never
-        release.
+        last tool finishes. A task the handler starts is held the same way
+        while the handler runs, and queues immediately once it has returned.
+        Frames from anywhere else are queued immediately: the worker's own
+        traffic and frames arriving over the bus, which run outside any
+        handler's context, and frames a handler on a different worker queues
+        here, which this worker would never release.
 
         Args:
             frame: Any ``Frame`` to deliver.
             direction: Direction the frame should travel. Defaults to
                 ``FrameDirection.DOWNSTREAM``.
         """
-        if self._defer_tool_frames and _IN_TOOL_CALL.get() is self and not self._closing:
+        call = _IN_TOOL_CALL.get()
+        in_own_call = call is not None and call.worker is self and call.running
+        if self._defer_tool_frames and in_own_call and not self._closing:
             self._deferred_frames.append((frame, direction))
         else:
             await super().queue_frame(frame, direction)
@@ -339,10 +356,12 @@ class LLMWorker(PipelineWorker):
         @functools.wraps(method)
         async def wrapper(params, *args, **kwargs):
             self._tool_call_inflight += 1
-            token = _IN_TOOL_CALL.set(self)
+            call = _ToolCall(self)
+            token = _IN_TOOL_CALL.set(call)
             try:
                 return await method(params, *args, **kwargs)
             finally:
+                call.running = False
                 _IN_TOOL_CALL.reset(token)
                 self._tool_call_inflight = max(0, self._tool_call_inflight - 1)
                 if self._tool_call_inflight == 0:
