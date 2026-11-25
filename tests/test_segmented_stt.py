@@ -344,6 +344,24 @@ async def test_speech_while_muted_is_not_transcribed():
 
 
 @pytest.mark.asyncio
+async def test_speech_while_muted_is_not_transcribed_after_audio_heard_unmuted():
+    # The audio kept from before speech was heard before the mute, so it
+    # doesn't open a segment for speech spoken entirely while muted.
+    service = _make_capturing_service()
+
+    await run_test(
+        service,
+        frames_to_send=[
+            InputAudioRawFrame(audio=PCM, sample_rate=SAMPLE_RATE, num_channels=1),
+            STTMuteFrame(mute=True),
+            *_segment_frames(),
+        ],
+    )
+
+    assert service.captured == []
+
+
+@pytest.mark.asyncio
 async def test_a_segment_keeps_only_the_audio_heard_unmuted():
     service = _make_capturing_service(wants_wav=False, trailing_silence_secs=0)
     before, during, after = PCM[:320], PCM[320:640], PCM[640:]

@@ -1270,6 +1270,14 @@ class SegmentedSTTService(STTService):
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             await self._handle_user_stopped_speaking(frame)
 
+    async def _handle_stt_mute(self, frame: STTMuteFrame):
+        """Mute or unmute transcription, dropping the audio kept from before speech on mute."""
+        await super()._handle_stt_mute(frame)
+        # Audio kept from before speech would otherwise open a segment the user
+        # speaks entirely while muted.
+        if frame.mute and not self._speech_buffer.speaking:
+            self._speech_buffer.stop()
+
     async def _handle_user_started_speaking(self, frame: VADUserStartedSpeakingFrame):
         self._speech_buffer.start()
         self._segment_count += 1
