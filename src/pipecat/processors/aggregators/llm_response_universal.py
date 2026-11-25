@@ -2391,9 +2391,9 @@ class LLMAssistantAggregator(LLMContextAggregator):
                 # If the frame is indicating we should run the LLM, do it.
                 run_llm = frame.run_llm
             else:
-                # Run the LLM when this is the last function call in the group
-                # to complete. If group_id is set, only consider sibling calls;
-                # otherwise always execute as soon as we receive the result.
+                # Run the LLM when this is the last synchronous call in the
+                # group to complete; async siblings don't hold it. Without a
+                # group_id, run as soon as the result arrives.
                 # The current call can still be in the in-progress map, since
                 # async calls report intermediate updates, so it is excluded.
                 run_llm = not self._has_synchronous_siblings_in_progress(
@@ -2518,9 +2518,9 @@ class LLMAssistantAggregator(LLMContextAggregator):
         if not frame.run_llm or self._user_speaking:
             return
 
-        # Hold off while siblings from the same LLM response are still running:
-        # whichever of them settles last runs inference, with this cancellation
-        # already in the context.
+        # Hold off while synchronous siblings from the same LLM response are
+        # still running: whichever of them settles last runs inference, with
+        # this cancellation already in the context.
         if self._has_synchronous_siblings_in_progress(group_id, frame.tool_call_id):
             return
 

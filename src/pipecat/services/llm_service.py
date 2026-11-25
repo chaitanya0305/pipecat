@@ -277,8 +277,9 @@ class FunctionCallRunnerItem:
         context: The LLM context.
         run_llm: Optional flag to control LLM execution after function call.
         group_id: Shared identifier for all function calls from the same LLM
-            response batch. Used to trigger the LLM exactly once when the last
-            call in the group completes.
+            response batch. Used to trigger the LLM once when the last
+            synchronous call in the group completes. Async calls
+            (``cancel_on_interruption=False``) don't hold the group.
         settled: Whether the call has already reached a terminal state — a
             final result, a timeout, or a cancellation. Results reported after
             that are rejected, since the rest of the pipeline has stopped
@@ -390,9 +391,11 @@ class LLMService(AIService, Generic[TAdapter]):
             run_in_parallel: Whether to run function calls in parallel or sequentially.
                 Defaults to True.
             group_parallel_tools: Whether to group parallel function calls so the LLM
-                is triggered exactly once after all calls in the batch complete. When
-                False, each function call result triggers the LLM independently as it
-                arrives. Defaults to True.
+                is triggered once after all synchronous calls in the batch complete.
+                Async calls (``cancel_on_interruption=False``) don't hold the group:
+                each of their results triggers the LLM on its own. When False, each
+                function call result triggers the LLM independently as it arrives.
+                Defaults to True.
             function_call_timeout_secs: Optional timeout in seconds for function calls.
                 A call that runs past it is cancelled: its handler is thrown an
                 ``asyncio.CancelledError``, the call is settled as cancelled, and
@@ -2082,7 +2085,7 @@ class LLMService(AIService, Generic[TAdapter]):
             await self.broadcast_frame(FunctionCallsStartedFrame, function_calls=user_visible_calls)
 
         # When group_parallel_tools is True all calls share a group_id so the
-        # aggregator triggers the LLM exactly once after the last one completes.
+        # aggregator triggers the LLM once after the last synchronous one completes.
         # When False, group_id is None and each result triggers inference independently.
         group_id = str(uuid.uuid4()) if self._group_parallel_tools else None
 

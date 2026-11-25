@@ -2430,6 +2430,86 @@ class TestLLMAssistantAggregator(unittest.IsolatedAsyncioTestCase):
         )
         assert aggregator.has_function_calls_in_progress
 
+    async def test_async_function_call_results_in_a_group_each_run_inference(self):
+        """Async calls don't hold their group: each result runs inference as it arrives."""
+        context = LLMContext()
+        aggregator = LLMAssistantAggregator(context)
+
+        def start(tool_call_id):
+            return FunctionCallInProgressFrame(
+                function_name="write_report",
+                tool_call_id=tool_call_id,
+                arguments={},
+                cancel_on_interruption=False,
+                group_id="group-1",
+            )
+
+        def result(tool_call_id):
+            return FunctionCallResultFrame(
+                function_name="write_report",
+                tool_call_id=tool_call_id,
+                arguments={},
+                result={"report": tool_call_id},
+            )
+
+        frames_to_send = [
+            start("1"),
+            start("2"),
+            SleepFrame(),
+            result("1"),
+            SleepFrame(),
+            result("2"),
+        ]
+        await run_test(
+            aggregator,
+            frames_to_send=frames_to_send,
+            expected_down_frames=[],
+            expected_up_frames=[LLMContextFrame, LLMContextFrame],
+        )
+        assert not aggregator.has_function_calls_in_progress
+
+    async def test_function_call_result_after_async_sibling_runs_inference_once(self):
+        """An async sibling that settles first waits for the synchronous call, which runs inference."""
+        context = LLMContext()
+        aggregator = LLMAssistantAggregator(context)
+        frames_to_send = [
+            FunctionCallInProgressFrame(
+                function_name="write_report",
+                tool_call_id="1",
+                arguments={},
+                cancel_on_interruption=False,
+                group_id="group-1",
+            ),
+            FunctionCallInProgressFrame(
+                function_name="get_weather",
+                tool_call_id="2",
+                arguments={"location": "Los Angeles"},
+                cancel_on_interruption=True,
+                group_id="group-1",
+            ),
+            SleepFrame(),
+            FunctionCallResultFrame(
+                function_name="write_report",
+                tool_call_id="1",
+                arguments={},
+                result={"report": "done"},
+            ),
+            SleepFrame(),
+            FunctionCallResultFrame(
+                function_name="get_weather",
+                tool_call_id="2",
+                arguments={"location": "Los Angeles"},
+                result={"conditions": "Sunny"},
+            ),
+        ]
+        await run_test(
+            aggregator,
+            frames_to_send=frames_to_send,
+            expected_down_frames=[],
+            expected_up_frames=[LLMContextFrame],
+        )
+        assert not aggregator.has_function_calls_in_progress
+
     async def test_function_call_cancel_run_llm_does_not_wait_for_async_sibling(self):
         """A cancellation asking to run inference runs it while an async sibling still runs."""
         context = LLMContext()

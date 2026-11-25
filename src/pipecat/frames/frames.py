@@ -2869,8 +2869,10 @@ class FunctionCallInProgressFrame(ControlFrame):
             message. A result that arrives before then settles in place like
             a synchronous call's.
         group_id: Identifier shared by all function calls originating from the
-            same LLM response batch. Used to determine when the last call in a
-            group completes so the LLM can be triggered exactly once.
+            same LLM response batch. Used to determine when the last synchronous
+            call in a group completes so the LLM can be triggered once for them.
+            Async calls (``cancel_on_interruption=False``) don't hold the group:
+            each of their results runs the LLM on its own.
     """
 
     interruptible: bool = field(default=False, init=False)
