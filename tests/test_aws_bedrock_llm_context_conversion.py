@@ -12,6 +12,8 @@ import pytest
 from botocore.exceptions import ClientError, EventStreamError
 
 from pipecat.adapters.llm.base_llm_adapter import LLMContextConversionError
+from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
+from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.services.aws.llm import AWSBedrockLLMService
 
@@ -161,3 +163,45 @@ async def test_aws_bedrock_llm_leaves_context_alone_on_throttling_error():
         await service._process_context(context)
 
     assert len(context.get_messages()) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_choice, expected",
+    [
+        ("auto", {"auto": {}}),
+        ("required", {"any": {}}),
+        (
+            {"type": "function", "function": {"name": "get_weather"}},
+            {"tool": {"name": "get_weather"}},
+        ),
+    ],
+)
+async def test_aws_bedrock_llm_sends_context_tool_choice(tool_choice, expected):
+    """Test that the context's tool_choice becomes Bedrock's toolChoice."""
+    service = _make_service()
+    tools = ToolsSchema(
+        standard_tools=[
+            FunctionSchema(
+                name="get_weather",
+                description="Get the weather",
+                properties={"city": {"type": "string"}},
+                required=["city"],
+            )
+        ]
+    )
+    context = LLMContext(
+        messages=[{"role": "user", "content": "What's the weather in Paris?"}],
+        tools=tools,
+        tool_choice=tool_choice,
+    )
+
+    async def stream():
+        yield {"messageStop": {"stopReason": "end_turn"}}
+
+    create_stream = AsyncMock(return_value={"stream": stream()})
+    with patch.object(service, "_create_converse_stream", create_stream):
+        await service._process_context(context)
+
+    request_params = create_stream.call_args.args[1]
+    assert request_params["toolConfig"]["toolChoice"] == expected

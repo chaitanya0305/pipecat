@@ -530,6 +530,8 @@ class AWSBedrockLLMService(LLMService[AWSBedrockLLMAdapter]):
                 if not using_noop_tool and tool_choice:
                     if tool_choice == "auto":
                         tool_config["toolChoice"] = {"auto": {}}
+                    elif tool_choice == "required":
+                        tool_config["toolChoice"] = {"any": {}}
                     elif tool_choice == "none":
                         # Skip adding toolChoice for "none"
                         pass
