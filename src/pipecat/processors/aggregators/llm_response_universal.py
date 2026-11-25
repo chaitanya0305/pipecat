@@ -2394,18 +2394,11 @@ class LLMAssistantAggregator(LLMContextAggregator):
                 # Run the LLM when this is the last function call in the group
                 # to complete. If group_id is set, only consider sibling calls;
                 # otherwise always execute as soon as we receive the result.
-                if group_id:
-                    run_llm = not any(
-                        f is not None
-                        and f.group_id == group_id
-                        # We are now able to receive "updates", so the current
-                        # frame can still be in the in progress list, and we need to
-                        # ignore it.
-                        and f.tool_call_id != frame.tool_call_id
-                        for f in self._function_calls_in_progress.values()
-                    )
-                else:
-                    run_llm = True
+                # The current call can still be in the in-progress map, since
+                # async calls report intermediate updates, so it is excluded.
+                run_llm = not self._has_synchronous_siblings_in_progress(
+                    group_id, frame.tool_call_id
+                )
 
         if run_llm:
             self._context_push_owed = True
@@ -2528,10 +2521,7 @@ class LLMAssistantAggregator(LLMContextAggregator):
         # Hold off while siblings from the same LLM response are still running:
         # whichever of them settles last runs inference, with this cancellation
         # already in the context.
-        if group_id and any(
-            f is not None and f.group_id == group_id
-            for f in self._function_calls_in_progress.values()
-        ):
+        if self._has_synchronous_siblings_in_progress(group_id, frame.tool_call_id):
             return
 
         await self._maybe_push_context()
@@ -2788,6 +2778,33 @@ class LLMAssistantAggregator(LLMContextAggregator):
         )
 
         return True
+
+    def _has_synchronous_siblings_in_progress(
+        self, group_id: str | None, tool_call_id: str
+    ) -> bool:
+        """Whether a synchronous call from the same LLM response is still running.
+
+        Inference for a group runs once, when its last synchronous call settles.
+        An async sibling (``cancel_on_interruption=False``) is not waited for:
+        its placeholder already tells the LLM the result comes later, and it
+        may run for minutes.
+
+        Args:
+            group_id: The group of the call that just settled, if any.
+            tool_call_id: The call that just settled, excluded from the check.
+
+        Returns:
+            True when inference should wait for a sibling.
+        """
+        if not group_id:
+            return False
+        return any(
+            f is not None
+            and f.group_id == group_id
+            and f.cancel_on_interruption
+            and f.tool_call_id != tool_call_id
+            for f in self._function_calls_in_progress.values()
+        )
 
     def _is_deferred(self, in_progress_frame: FunctionCallInProgressFrame) -> bool:
         """Whether a call's final result must be delivered as a deferred message.

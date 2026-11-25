@@ -2395,6 +2395,70 @@ class TestLLMAssistantAggregator(unittest.IsolatedAsyncioTestCase):
         )
         assert not aggregator.has_function_calls_in_progress
 
+    async def test_function_call_result_does_not_wait_for_async_sibling(self):
+        """A synchronous result runs inference while an async call from its group still runs."""
+        context = LLMContext()
+        aggregator = LLMAssistantAggregator(context)
+        frames_to_send = [
+            FunctionCallInProgressFrame(
+                function_name="write_report",
+                tool_call_id="1",
+                arguments={},
+                cancel_on_interruption=False,
+                group_id="group-1",
+            ),
+            FunctionCallInProgressFrame(
+                function_name="get_weather",
+                tool_call_id="2",
+                arguments={"location": "Los Angeles"},
+                cancel_on_interruption=True,
+                group_id="group-1",
+            ),
+            SleepFrame(),
+            FunctionCallResultFrame(
+                function_name="get_weather",
+                tool_call_id="2",
+                arguments={"location": "Los Angeles"},
+                result={"conditions": "Sunny"},
+            ),
+        ]
+        await run_test(
+            aggregator,
+            frames_to_send=frames_to_send,
+            expected_down_frames=[],
+            expected_up_frames=[LLMContextFrame],
+        )
+        assert aggregator.has_function_calls_in_progress
+
+    async def test_function_call_cancel_run_llm_does_not_wait_for_async_sibling(self):
+        """A cancellation asking to run inference runs it while an async sibling still runs."""
+        context = LLMContext()
+        aggregator = LLMAssistantAggregator(context)
+        frames_to_send = [
+            FunctionCallInProgressFrame(
+                function_name="write_report",
+                tool_call_id="1",
+                arguments={},
+                cancel_on_interruption=False,
+                group_id="group-1",
+            ),
+            FunctionCallInProgressFrame(
+                function_name="get_weather",
+                tool_call_id="2",
+                arguments={"location": "Los Angeles"},
+                cancel_on_interruption=True,
+                group_id="group-1",
+            ),
+            SleepFrame(),
+            FunctionCallCancelFrame(function_name="get_weather", tool_call_id="2", run_llm=True),
+        ]
+        await run_test(
+            aggregator,
+            frames_to_send=frames_to_send,
+            expected_down_frames=[],
+            expected_up_frames=[LLMContextFrame],
+        )
+
     async def test_function_call_on_context_updated(self):
         context_updated = False
 
